@@ -5,29 +5,27 @@ import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime
 
-# --- 페이지 기본 설정 (모바일 최적화) ---
+# --- 페이지 기본 설정 ---
 st.set_page_config(page_title="트라이팟 40년 백테스터", layout="wide")
 st.title("🛡️ 트라이팟 퀀트 백테스터")
 st.caption("나스닥 100 기반 동적 배분 & 미국 양도세 22% 반영 (TQQQ vs QLD 비교)")
 
-# --- 사이드바 파라미터 설정 ---
+# --- 사이드바 설정 ---
 st.sidebar.header("⚙️ 전략 및 기간 설정")
 
-# 1. 운용 대상 레버리지 ETF 선택
 target_asset = st.sidebar.selectbox("운용 대상 레버리지 ETF", ["TQQQ (3배)", "QLD (2배)"])
 asset_key = "TQQQ" if "TQQQ" in target_asset else "QLD"
 
-# 2. 백테스트 기간 설정 (월 단위)
 st.sidebar.subheader("📅 백테스트 기간 설정")
 year_options = list(range(1986, 2027))
 month_options = list(range(1, 13))
 
 col_s1, col_s2 = st.sidebar.columns(2)
-start_year = col_s1.selectbox("시작 연도", year_options, index=17) 
+start_year = col_s1.selectbox("시작 연도", year_options, index=14) # 2000년
 start_month = col_s2.selectbox("시작 월", month_options, index=0)   
 
 col_e1, col_e2 = st.sidebar.columns(2)
-end_year = col_e1.selectbox("종료 연도", year_options, index=34)   
+end_year = col_e1.selectbox("종료 연도", year_options, index=39)   # 2025년
 end_month = col_e2.selectbox("종료 월", month_options, index=11)  
 
 start_dt = pd.Timestamp(year=start_year, month=start_month, day=1)
@@ -37,7 +35,6 @@ if start_dt >= end_dt:
     st.sidebar.error("⚠️ 시작 시점이 종료 시점보다 앞서야 합니다.")
     st.stop()
 
-# 3. 통화 및 기본 설정
 st.sidebar.subheader("💱 통화 환산 설정")
 currency = st.sidebar.radio("표시 통화", ["USD ($)", "KRW (원)"])
 exchange_rate = st.sidebar.number_input("적용 환율 (원/달러)", value=1350, step=10)
@@ -57,7 +54,7 @@ alloc_normal = st.sidebar.slider("1. 정상 구간 (250일선 상회 & 안정)",
 alloc_caution = st.sidebar.slider("2. 주의 구간 (낙폭 발생 or VIX 상승)", 0, 100, 50) / 100
 alloc_bear = st.sidebar.slider("3. 위험/하락장 (250일선 하회 & 고변동성)", 0, 100, 0) / 100
 
-# --- 40년 치 원천 데이터 수집 및 합성 레버리지 구축 ---
+# --- 40년 치 원천 데이터 수집 ---
 @st.cache_data
 def load_40yr_data():
     raw = yf.download(["^NDX", "^VIX", "TQQQ", "QLD"], start="1985-10-01")["Close"]
@@ -99,7 +96,7 @@ def load_40yr_data():
 with st.spinner("금융 데이터 로딩 및 인덱스 정합성 검증 중..."):
     full_data = load_40yr_data()
 
-# 지표 계산은 워밍업 왜곡 방지를 위해 전체 시계열에서 수행
+# 지표 워밍업 왜곡 방지
 full_data["QQQ_SMA250"] = full_data["QQQ"].rolling(window=250).mean()
 full_data["QQQ_Peak"] = full_data["QQQ"].cummax()
 full_data["QQQ_DD"] = (full_data["QQQ"] - full_data["QQQ_Peak"]) / full_data["QQQ_Peak"]
@@ -111,7 +108,7 @@ if len(sim_data) < 10:
     st.warning("선택하신 기간의 유효 거래일 데이터가 부족합니다.")
     st.stop()
 
-# 시그널 판독 (익일 장 시작 체결)
+# 시그널 판독
 signals = []
 for i in range(len(sim_data)):
     qqq = sim_data["QQQ"].iloc[i]
@@ -134,7 +131,7 @@ for i in range(len(sim_data)):
 sim_data["Target_Alloc"] = signals
 sim_data["Exec_Alloc"] = sim_data["Target_Alloc"].shift(1).fillna(alloc_normal)
 
-# --- 정밀 회계 엔진 ---
+# --- 정밀 회계 엔진 (세금 포함) ---
 dates = sim_data.index
 prices = sim_data[asset_key].values
 allocs = sim_data["Exec_Alloc"].values
@@ -200,7 +197,6 @@ sim_data["QQQ_Hold"] = qqq_benchmark
 sim_data["QLD_Hold"] = qld_benchmark
 sim_data["TQQQ_Hold"] = tqqq_benchmark
 
-# --- 성과 지표 산출 (순수 수익률 기준) ---
 def get_metrics(series):
     cagr = ((series[-1] / series[0]) ** (252 / len(series)) - 1) * 100
     peak = np.maximum.accumulate(series)
@@ -212,12 +208,11 @@ qqq_cagr, qqq_mdd = get_metrics(sim_data["QQQ_Hold"].values)
 qld_cagr, qld_mdd = get_metrics(sim_data["QLD_Hold"].values)
 tqqq_cagr, tqqq_mdd = get_metrics(sim_data["TQQQ_Hold"].values)
 
-# --- 통화 변환 적용 (표시용 데이터 반올림) ---
 if currency == "KRW (원)":
-    sim_data["Portfolio"] = sim_data["Portfolio"] * exchange_rate
-    sim_data["QQQ_Hold"] = sim_data["QQQ_Hold"] * exchange_rate
-    sim_data["QLD_Hold"] = sim_data["QLD_Hold"] * exchange_rate
-    sim_data["TQQQ_Hold"] = sim_data["TQQQ_Hold"] * exchange_rate
+    sim_data["Portfolio"] *= exchange_rate
+    sim_data["QQQ_Hold"] *= exchange_rate
+    sim_data["QLD_Hold"] *= exchange_rate
+    sim_data["TQQQ_Hold"] *= exchange_rate
     display_tax = total_tax_paid * exchange_rate
     curr_symbol = "₩"
 else:
@@ -236,15 +231,28 @@ col4.metric("TQQQ (3배) 단순보유", f"{curr_symbol}{sim_data['TQQQ_Hold'].il
 if apply_tax:
     st.info(f"💡 해당 구간 누적 납부된 미국 양도소득세 총액: **{curr_symbol}{display_tax:,.0f}**")
 
-# --- 차트 시각화 (소수점 반올림 및 기호 적용) ---
+# --- 차트 시각화 (색상 분리 핵심 코드) ---
 fig = go.Figure()
-fig.add_trace(go.Scatter(x=sim_data.index, y=sim_data["Portfolio"], mode='lines', name=f'트라이팟-{asset_key}', line=dict(color='#00ba38', width=2.5), hovertemplate=f'{curr_symbol}%{{y:,.0f}}'))
+
+# 1. 벤치마크 선들
 fig.add_trace(go.Scatter(x=sim_data.index, y=sim_data["QQQ_Hold"], mode='lines', name='QQQ (1X)', line=dict(color='#619cff', width=1.2), hovertemplate=f'{curr_symbol}%{{y:,.0f}}'))
-fig.add_trace(go.Scatter(x=sim_data.index, y=sim_data["QLD_Hold"], mode='lines', name='QLD (2X)', line=dict(color='#e79f00', width=1.2, dash='dash'), hovertemplate=f'{curr_symbol}%{{y:,.0f}}'))
-fig.add_trace(go.Scatter(x=sim_data.index, y=sim_data["TQQQ_Hold"], mode='lines', name='TQQQ (3X)', line=dict(color='#f8766d', width=1.2, dash='dot'), hovertemplate=f'{curr_symbol}%{{y:,.0f}}'))
+fig.add_trace(go.Scatter(x=sim_data.index, y=sim_data["QLD_Hold"], mode='lines', name='QLD (2X)', line=dict(color='#9c27b0', width=1.2, dash='dash'), hovertemplate=f'{curr_symbol}%{{y:,.0f}}'))
+fig.add_trace(go.Scatter(x=sim_data.index, y=sim_data["TQQQ_Hold"], mode='lines', name='TQQQ (3X)', line=dict(color='#b3b3b3', width=1.2, dash='dot'), hovertemplate=f'{curr_symbol}%{{y:,.0f}}'))
+
+# 2. 트라이팟 베이스 라인 (끊김 방지용 연한 선)
+fig.add_trace(go.Scatter(x=sim_data.index, y=sim_data["Portfolio"], mode='lines', line=dict(color='lightgray', width=1), showlegend=False, hoverinfo='skip'))
+
+# 3. 비중별 색상 마커 덧칠 (초록, 노랑, 빨강)
+idx_normal = np.isclose(sim_data["Target_Alloc"], alloc_normal)
+idx_caution = np.isclose(sim_data["Target_Alloc"], alloc_caution)
+idx_bear = np.isclose(sim_data["Target_Alloc"], alloc_bear)
+
+fig.add_trace(go.Scatter(x=sim_data.index[idx_normal], y=sim_data["Portfolio"][idx_normal], mode='markers', name=f'{asset_key} (정상 100%)', marker=dict(color='#00ba38', size=3), hovertemplate=f'정상진입: {curr_symbol}%{{y:,.0f}}'))
+fig.add_trace(go.Scatter(x=sim_data.index[idx_caution], y=sim_data["Portfolio"][idx_caution], mode='markers', name='1.5배수 (비중 50%)', marker=dict(color='#e79f00', size=3), hovertemplate=f'절반매도: {curr_symbol}%{{y:,.0f}}'))
+fig.add_trace(go.Scatter(x=sim_data.index[idx_bear], y=sim_data["Portfolio"][idx_bear], mode='markers', name='현금 (위험 0%)', marker=dict(color='#f8766d', size=3), hovertemplate=f'현금방어: {curr_symbol}%{{y:,.0f}}'))
 
 fig.update_layout(
-    title=f"자산 성장 곡선 (로그 스케일 / {asset_key})",
+    title=f"자산 성장 곡선 (로그 스케일 / 색상별 전략 표기)",
     yaxis_type="log",
     xaxis_title="날짜",
     yaxis_title=f"계좌 평가액 ({curr_symbol})",
