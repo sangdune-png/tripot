@@ -5,59 +5,43 @@ import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime
 
-# --- 페이지 기본 설정 ---
-st.set_page_config(page_title="트라이팟 40년 백테스터", layout="wide")
-st.title("🛡️ 트라이팟 퀀트 백테스터")
-st.caption("나스닥 100 기반 동적 배분 & 미국 양도세 22% 반영 (TQQQ vs QLD 비교)")
+st.set_page_config(page_title="트라이팟 오리지널 백테스터", layout="wide")
+st.title("🛡️ 트라이팟 퀀트 백테스터 (오리지널 룰 완벽 적용)")
+st.caption("250일선 완충지대(-5%~+1%), VIX 10일선, 52주 고점 기반 1.5배수 정밀 시뮬레이션")
 
-# --- 사이드바 설정 ---
 st.sidebar.header("⚙️ 전략 및 기간 설정")
-
-target_asset = st.sidebar.selectbox("운용 대상 레버리지 ETF", ["TQQQ (3배)", "QLD (2배)"])
-asset_key = "TQQQ" if "TQQQ" in target_asset else "QLD"
 
 st.sidebar.subheader("📅 백테스트 기간 설정")
 year_options = list(range(1986, 2027))
 month_options = list(range(1, 13))
 
 col_s1, col_s2 = st.sidebar.columns(2)
-start_year = col_s1.selectbox("시작 연도", year_options, index=14) # 2000년
+start_year = col_s1.selectbox("시작 연도", year_options, index=14) 
 start_month = col_s2.selectbox("시작 월", month_options, index=0)   
 
 col_e1, col_e2 = st.sidebar.columns(2)
-end_year = col_e1.selectbox("종료 연도", year_options, index=39)   # 2025년
+end_year = col_e1.selectbox("종료 연도", year_options, index=39)   
 end_month = col_e2.selectbox("종료 월", month_options, index=11)  
 
 start_dt = pd.Timestamp(year=start_year, month=start_month, day=1)
 end_dt = pd.Timestamp(year=end_year, month=end_month, day=1) + pd.offsets.MonthEnd(1)
 
-if start_dt >= end_dt:
-    st.sidebar.error("⚠️ 시작 시점이 종료 시점보다 앞서야 합니다.")
-    st.stop()
-
-st.sidebar.subheader("💱 통화 환산 설정")
+st.sidebar.subheader("💱 통화 및 자본 설정")
 currency = st.sidebar.radio("표시 통화", ["USD ($)", "KRW (원)"])
 exchange_rate = st.sidebar.number_input("적용 환율 (원/달러)", value=1350, step=10)
-
-st.sidebar.subheader("💰 자본 및 세금")
 initial_capital = st.sidebar.number_input("초기 자본 (USD)", value=10000, step=1000)
+
+st.sidebar.subheader("💰 세금 및 거래비용")
 apply_tax = st.sidebar.checkbox("미국 양도세 22% 차감 적용", value=True)
-tax_deduction_usd = st.sidebar.number_input("연간 기본공제 (USD)", value=2000, help="약 250만 원 상당 달러 기준")
-fee_rate = st.sidebar.number_input("매매 수수료 + 슬리피지 (편도 %)", value=0.1, step=0.05) / 100
+tax_deduction_usd = st.sidebar.number_input("연간 기본공제 (USD)", value=2500, help="약 250만 원")
+fee_rate = st.sidebar.number_input("매매 수수료 (편도 %)", value=0.1, step=0.05) / 100
 
-st.sidebar.subheader("트라이팟 3대 조건 기준치")
-vix_panic_threshold = st.sidebar.slider("VIX 공포 임계치", 20, 40, 28)
-mdd_warning_threshold = st.sidebar.slider("나스닥 전고점 대비 하락 경보 (-%)", -30, -5, -10) / 100
+st.sidebar.subheader("트라이팟 오리지널 파라미터")
+st.sidebar.markdown("- 상승 전환: 250일선 + 1%\n- 하락 전환: 250일선 - 5%\n- 주의 VIX: 28 / 패닉 VIX: 18\n- 고점 낙폭 기준: 9%")
 
-st.sidebar.subheader(f"비중 배분 규칙 ({asset_key} : 현금)")
-alloc_normal = st.sidebar.slider("1. 정상 구간 (250일선 상회 & 안정)", 0, 100, 100) / 100
-alloc_caution = st.sidebar.slider("2. 주의 구간 (낙폭 발생 or VIX 상승)", 0, 100, 50) / 100
-alloc_bear = st.sidebar.slider("3. 위험/하락장 (250일선 하회 & 고변동성)", 0, 100, 0) / 100
-
-# --- 40년 치 원천 데이터 수집 ---
 @st.cache_data
 def load_40yr_data():
-    raw = yf.download(["^NDX", "^VIX", "TQQQ", "QLD"], start="1985-10-01")["Close"]
+    raw = yf.download(["^NDX", "^VIX", "TQQQ", "QLD"], start="1985-01-01")["Close"]
     
     df = pd.DataFrame(index=raw.index)
     df["NDX"] = raw["^NDX"]
@@ -70,90 +54,93 @@ def load_40yr_data():
     
     ndx_ret = df["NDX"].pct_change().fillna(0)
     
-    # 합성 TQQQ (3X)
     daily_drag_3x = 0.015 / 252
     synth_tqqq_ret = (ndx_ret * 3.0) - daily_drag_3x
     first_tqqq_date = df["TQQQ_ACTUAL"].first_valid_index()
     first_tqqq_price = df["TQQQ_ACTUAL"].loc[first_tqqq_date]
     cum_synth_3x = (1.0 + synth_tqqq_ret).cumprod()
     scale_3x = first_tqqq_price / cum_synth_3x.loc[first_tqqq_date]
-    synth_tqqq = cum_synth_3x * scale_3x
-    df["TQQQ"] = df["TQQQ_ACTUAL"].combine_first(synth_tqqq)
+    df["TQQQ"] = df["TQQQ_ACTUAL"].combine_first(cum_synth_3x * scale_3x)
 
-    # 합성 QLD (2X)
     daily_drag_2x = 0.0095 / 252
     synth_qld_ret = (ndx_ret * 2.0) - daily_drag_2x
     first_qld_date = df["QLD_ACTUAL"].first_valid_index()
     first_qld_price = df["QLD_ACTUAL"].loc[first_qld_date]
     cum_synth_2x = (1.0 + synth_qld_ret).cumprod()
     scale_2x = first_qld_price / cum_synth_2x.loc[first_qld_date]
-    synth_qld = cum_synth_2x * scale_2x
-    df["QLD"] = df["QLD_ACTUAL"].combine_first(synth_qld)
+    df["QLD"] = df["QLD_ACTUAL"].combine_first(cum_synth_2x * scale_2x)
 
     df["QQQ"] = df["NDX"]
     return df[["QQQ", "VIX", "TQQQ", "QLD"]]
 
-with st.spinner("금융 데이터 로딩 및 인덱스 정합성 검증 중..."):
+with st.spinner("오리지널 룰 기반 데이터 산출 중..."):
     full_data = load_40yr_data()
 
-# 지표 워밍업 왜곡 방지
-full_data["QQQ_SMA250"] = full_data["QQQ"].rolling(window=250).mean()
-full_data["QQQ_Peak"] = full_data["QQQ"].cummax()
-full_data["QQQ_DD"] = (full_data["QQQ"] - full_data["QQQ_Peak"]) / full_data["QQQ_Peak"]
+# 오리지널 3대 지표 완벽 구현
+full_data["SMA250"] = full_data["QQQ"].rolling(window=250).mean()
+full_data["VIX10"] = full_data["VIX"].rolling(window=10).mean()
+full_data["QQQ_52W_High"] = full_data["QQQ"].rolling(window=252).max()
+full_data["QQQ_DD"] = (full_data["QQQ"] - full_data["QQQ_52W_High"]) / full_data["QQQ_52W_High"]
 
-sim_data = full_data.dropna(subset=["QQQ_SMA250"]).copy()
-sim_data = sim_data[(sim_data.index >= start_dt) & (sim_data.index <= end_dt)].copy()
+# 워밍업 구간 제거 후 유저 설정 기간 필터링
+full_data = full_data.dropna(subset=["SMA250", "QQQ_52W_High", "VIX10"])
+sim_data = full_data[(full_data.index >= start_dt) & (full_data.index <= end_dt)].copy()
 
-if len(sim_data) < 10:
-    st.warning("선택하신 기간의 유효 거래일 데이터가 부족합니다.")
-    st.stop()
-
-# 시그널 판독
-signals = []
+# 1단계: 시장 판독 (휩쏘 방지 밴드 적용)
+trend_state = []
+current_trend = "Bull"
 for i in range(len(sim_data)):
     qqq = sim_data["QQQ"].iloc[i]
-    sma = sim_data["QQQ_SMA250"].iloc[i]
-    vix = sim_data["VIX"].iloc[i]
+    sma = sim_data["SMA250"].iloc[i]
+    
+    if qqq > sma * 1.01:
+        current_trend = "Bull"
+    elif qqq < sma * 0.95:
+        current_trend = "Bear"
+    # 그 사이 구간은 '어제 상태 유지'
+    trend_state.append(current_trend)
+sim_data["Trend"] = trend_state
+
+# 2단계: 무엇을 살 것인가 (Target State 결정)
+target_state = []
+for i in range(len(sim_data)):
+    t = sim_data["Trend"].iloc[i]
+    v10 = sim_data["VIX10"].iloc[i]
     dd = sim_data["QQQ_DD"].iloc[i]
+    
+    if t == "Bull":
+        if v10 < 28 and dd >= -0.09:
+            target_state.append("TQQQ")
+        else:
+            target_state.append("1.5X")
+    else: # Bear
+        if v10 < 18:
+            target_state.append("1.5X")
+        else:
+            target_state.append("CASH")
 
-    is_above_sma = qqq >= sma
-    is_vix_safe = vix < vix_panic_threshold
-    is_dd_safe = dd >= mdd_warning_threshold
+sim_data["Target"] = target_state
+sim_data["Exec_Target"] = sim_data["Target"].shift(1).fillna("CASH")
 
-    if is_above_sma and is_vix_safe and is_dd_safe:
-        target = alloc_normal
-    elif not is_above_sma and (not is_vix_safe or not is_dd_safe):
-        target = alloc_bear
-    else:
-        target = alloc_caution
-    signals.append(target)
-
-sim_data["Target_Alloc"] = signals
-sim_data["Exec_Alloc"] = sim_data["Target_Alloc"].shift(1).fillna(alloc_normal)
-
-# --- 정밀 회계 엔진 (세금 포함) ---
-dates = sim_data.index
-prices = sim_data[asset_key].values
-allocs = sim_data["Exec_Alloc"].values
-
+# 3단계: 정밀 매매 엔진 ("어제와 같으면 아무것도 하지 않는다")
+assets = ["TQQQ", "QQQ", "QLD"]
+shares = {a: 0.0 for a in assets}
+avg_cost = {a: 0.0 for a in assets}
 cash = initial_capital
-shares = 0.0
-avg_cost = 0.0
 annual_realized_gain = 0.0
-current_year = dates[0].year
+total_tax_paid = 0.0
+current_year = sim_data.index[0].year
 
 portfolio_values = []
-qqq_benchmark = (initial_capital / sim_data["QQQ"].values[0]) * sim_data["QQQ"].values
-tqqq_benchmark = (initial_capital / sim_data["TQQQ"].values[0]) * sim_data["TQQQ"].values
-qld_benchmark = (initial_capital / sim_data["QLD"].values[0]) * sim_data["QLD"].values
+current_state = "CASH"
 
-total_tax_paid = 0.0
-
-for i, date in enumerate(dates):
+for i in range(len(sim_data)):
+    date = sim_data.index[i]
     year = date.year
-    price = prices[i]
-    alloc = allocs[i]
-
+    target = sim_data["Exec_Target"].iloc[i]
+    prices = {a: sim_data[a].iloc[i] for a in assets}
+    
+    # 연말 양도세 정산
     if year != current_year:
         if apply_tax and annual_realized_gain > tax_deduction_usd:
             taxable = annual_realized_gain - tax_deduction_usd
@@ -163,50 +150,58 @@ for i, date in enumerate(dates):
         annual_realized_gain = 0.0
         current_year = year
 
-    total_val = cash + (shares * price)
-    target_equity_val = total_val * alloc
-    current_equity_val = shares * price
-    diff_val = target_equity_val - current_equity_val
+    # 리밸런싱 (상태가 변했을 때만 전량 교체 매매 진행)
+    if target != current_state:
+        # 1. 기존 보유 전량 매도
+        for a in assets:
+            if shares[a] > 0:
+                actual_price = prices[a] * (1 - fee_rate)
+                realized = (actual_price - avg_cost[a]) * shares[a]
+                annual_realized_gain += realized
+                cash += shares[a] * actual_price
+                shares[a] = 0.0
+                avg_cost[a] = 0.0
+                
+        # 2. 새로운 타겟 비율대로 매수
+        if target == "TQQQ":
+            alloc = {"TQQQ": 1.0, "QQQ": 0.0, "QLD": 0.0}
+        elif target == "1.5X":
+            alloc = {"TQQQ": 0.0, "QQQ": 0.5, "QLD": 0.5}
+        else: # CASH
+            alloc = {"TQQQ": 0.0, "QQQ": 0.0, "QLD": 0.0}
+            
+        total_cash_to_deploy = cash
+        for a in assets:
+            weight = alloc[a]
+            if weight > 0:
+                alloc_cash = total_cash_to_deploy * weight
+                actual_price = prices[a] * (1 + fee_rate)
+                shares_bought = alloc_cash / actual_price
+                shares[a] += shares_bought
+                avg_cost[a] = actual_price
+                cash -= alloc_cash
+                
+        current_state = target
 
-    if diff_val > 0:
-        buy_val = diff_val
-        actual_price = price * (1 + fee_rate)
-        shares_to_buy = buy_val / actual_price
-        if cash >= buy_val:
-            new_shares = shares + shares_to_buy
-            avg_cost = ((shares * avg_cost) + (shares_to_buy * actual_price)) / new_shares
-            shares = new_shares
-            cash -= buy_val
-    elif diff_val < 0:
-        sell_val = abs(diff_val)
-        actual_price = price * (1 - fee_rate)
-        shares_to_sell = min(shares, sell_val / price)
-        if shares_to_sell > 0:
-            realized = (actual_price - avg_cost) * shares_to_sell
-            annual_realized_gain += realized
-            shares -= shares_to_sell
-            cash += shares_to_sell * actual_price
-            if shares == 0:
-                avg_cost = 0.0
-
-    current_val = cash + (shares * price)
+    # 매일 포트폴리오 가치 기록
+    current_val = cash + sum(shares[a] * prices[a] for a in assets)
     portfolio_values.append(current_val)
 
 sim_data["Portfolio"] = portfolio_values
-sim_data["QQQ_Hold"] = qqq_benchmark
-sim_data["QLD_Hold"] = qld_benchmark
-sim_data["TQQQ_Hold"] = tqqq_benchmark
+sim_data["QQQ_Hold"] = (initial_capital / sim_data["QQQ"].iloc[0]) * sim_data["QQQ"]
+sim_data["QLD_Hold"] = (initial_capital / sim_data["QLD"].iloc[0]) * sim_data["QLD"]
+sim_data["TQQQ_Hold"] = (initial_capital / sim_data["TQQQ"].iloc[0]) * sim_data["TQQQ"]
 
 def get_metrics(series):
-    cagr = ((series[-1] / series[0]) ** (252 / len(series)) - 1) * 100
+    cagr = ((series.iloc[-1] / series.iloc[0]) ** (252 / len(series)) - 1) * 100
     peak = np.maximum.accumulate(series)
     mdd = np.min((series - peak) / peak) * 100
     return cagr, mdd
 
-strat_cagr, strat_mdd = get_metrics(sim_data["Portfolio"].values)
-qqq_cagr, qqq_mdd = get_metrics(sim_data["QQQ_Hold"].values)
-qld_cagr, qld_mdd = get_metrics(sim_data["QLD_Hold"].values)
-tqqq_cagr, tqqq_mdd = get_metrics(sim_data["TQQQ_Hold"].values)
+strat_cagr, strat_mdd = get_metrics(sim_data["Portfolio"])
+qqq_cagr, qqq_mdd = get_metrics(sim_data["QQQ_Hold"])
+qld_cagr, qld_mdd = get_metrics(sim_data["QLD_Hold"])
+tqqq_cagr, tqqq_mdd = get_metrics(sim_data["TQQQ_Hold"])
 
 if currency == "KRW (원)":
     sim_data["Portfolio"] *= exchange_rate
@@ -223,7 +218,7 @@ else:
 st.subheader(f"📊 백테스트 기간: {start_dt.strftime('%Y년 %m월')} ~ {end_dt.strftime('%Y년 %m월')}")
 
 col1, col2, col3, col4 = st.columns(4)
-col1.metric(f"트라이팟 전략 ({asset_key})", f"{curr_symbol}{sim_data['Portfolio'].iloc[-1]:,.0f}", f"CAGR {strat_cagr:.1f}% / MDD {strat_mdd:.1f}%")
+col1.metric(f"트라이팟 전략", f"{curr_symbol}{sim_data['Portfolio'].iloc[-1]:,.0f}", f"CAGR {strat_cagr:.1f}% / MDD {strat_mdd:.1f}%")
 col2.metric("QQQ (1배) 단순보유", f"{curr_symbol}{sim_data['QQQ_Hold'].iloc[-1]:,.0f}", f"CAGR {qqq_cagr:.1f}% / MDD {qqq_mdd:.1f}%")
 col3.metric("QLD (2배) 단순보유", f"{curr_symbol}{sim_data['QLD_Hold'].iloc[-1]:,.0f}", f"CAGR {qld_cagr:.1f}% / MDD {qld_mdd:.1f}%")
 col4.metric("TQQQ (3배) 단순보유", f"{curr_symbol}{sim_data['TQQQ_Hold'].iloc[-1]:,.0f}", f"CAGR {tqqq_cagr:.1f}% / MDD {tqqq_mdd:.1f}%")
@@ -231,28 +226,25 @@ col4.metric("TQQQ (3배) 단순보유", f"{curr_symbol}{sim_data['TQQQ_Hold'].il
 if apply_tax:
     st.info(f"💡 해당 구간 누적 납부된 미국 양도소득세 총액: **{curr_symbol}{display_tax:,.0f}**")
 
-# --- 차트 시각화 (색상 분리 핵심 코드) ---
+# --- 차트 시각화 (색상 분리 완벽 적용) ---
 fig = go.Figure()
 
-# 1. 벤치마크 선들
 fig.add_trace(go.Scatter(x=sim_data.index, y=sim_data["QQQ_Hold"], mode='lines', name='QQQ (1X)', line=dict(color='#619cff', width=1.2), hovertemplate=f'{curr_symbol}%{{y:,.0f}}'))
 fig.add_trace(go.Scatter(x=sim_data.index, y=sim_data["QLD_Hold"], mode='lines', name='QLD (2X)', line=dict(color='#9c27b0', width=1.2, dash='dash'), hovertemplate=f'{curr_symbol}%{{y:,.0f}}'))
 fig.add_trace(go.Scatter(x=sim_data.index, y=sim_data["TQQQ_Hold"], mode='lines', name='TQQQ (3X)', line=dict(color='#b3b3b3', width=1.2, dash='dot'), hovertemplate=f'{curr_symbol}%{{y:,.0f}}'))
 
-# 2. 트라이팟 베이스 라인 (끊김 방지용 연한 선)
 fig.add_trace(go.Scatter(x=sim_data.index, y=sim_data["Portfolio"], mode='lines', line=dict(color='lightgray', width=1), showlegend=False, hoverinfo='skip'))
 
-# 3. 비중별 색상 마커 덧칠 (초록, 노랑, 빨강)
-idx_normal = np.isclose(sim_data["Target_Alloc"], alloc_normal)
-idx_caution = np.isclose(sim_data["Target_Alloc"], alloc_caution)
-idx_bear = np.isclose(sim_data["Target_Alloc"], alloc_bear)
+idx_tqqq = sim_data["Exec_Target"] == "TQQQ"
+idx_15x = sim_data["Exec_Target"] == "1.5X"
+idx_cash = sim_data["Exec_Target"] == "CASH"
 
-fig.add_trace(go.Scatter(x=sim_data.index[idx_normal], y=sim_data["Portfolio"][idx_normal], mode='markers', name=f'{asset_key} (정상 100%)', marker=dict(color='#00ba38', size=3), hovertemplate=f'정상진입: {curr_symbol}%{{y:,.0f}}'))
-fig.add_trace(go.Scatter(x=sim_data.index[idx_caution], y=sim_data["Portfolio"][idx_caution], mode='markers', name='1.5배수 (비중 50%)', marker=dict(color='#e79f00', size=3), hovertemplate=f'절반매도: {curr_symbol}%{{y:,.0f}}'))
-fig.add_trace(go.Scatter(x=sim_data.index[idx_bear], y=sim_data["Portfolio"][idx_bear], mode='markers', name='현금 (위험 0%)', marker=dict(color='#f8766d', size=3), hovertemplate=f'현금방어: {curr_symbol}%{{y:,.0f}}'))
+fig.add_trace(go.Scatter(x=sim_data.index[idx_tqqq], y=sim_data["Portfolio"][idx_tqqq], mode='markers', name='TQQQ 100% (상승)', marker=dict(color='#00ba38', size=3), hovertemplate=f'TQQQ 100%: {curr_symbol}%{{y:,.0f}}'))
+fig.add_trace(go.Scatter(x=sim_data.index[idx_15x], y=sim_data["Portfolio"][idx_15x], mode='markers', name='QQQ 50%+QLD 50% (1.5배수)', marker=dict(color='#e79f00', size=3), hovertemplate=f'1.5배수: {curr_symbol}%{{y:,.0f}}'))
+fig.add_trace(go.Scatter(x=sim_data.index[idx_cash], y=sim_data["Portfolio"][idx_cash], mode='markers', name='현금 100% (하락)', marker=dict(color='#f8766d', size=3), hovertemplate=f'현금 방어: {curr_symbol}%{{y:,.0f}}'))
 
 fig.update_layout(
-    title=f"자산 성장 곡선 (로그 스케일 / 색상별 전략 표기)",
+    title="자산 성장 곡선 (로그 스케일 / 트라이팟 오리지널)",
     yaxis_type="log",
     xaxis_title="날짜",
     yaxis_title=f"계좌 평가액 ({curr_symbol})",
